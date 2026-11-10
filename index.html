@@ -1,0 +1,1010 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Projeto: NEON - Edição Cinematográfica</title>
+<style>
+:root { --bg: #020205; --fg: #00f3ff; box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); font-family: "Segoe UI", Roboto, sans-serif; text-align: center; padding-top: 8px; overflow-x: hidden; }
+canvas { width: 100%; max-width: 980px; height: auto; background: #010103; display: block; margin: 0 auto 12px; box-shadow: 0 15px 60px rgba(0, 243, 255, 0.12); border-radius: 6px; border: 1px solid #151525; }
+.controls { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px; max-width: 980px; margin: 0 auto; padding: 0 15px; }
+button { font: inherit; font-weight: 700; color: #fff; background: rgba(0, 243, 255, 0.08); border: 1px solid rgba(0, 243, 255, 0.5); border-radius: 20px; padding: 7px 18px; cursor: pointer; transition: 0.25s; text-transform: uppercase; letter-spacing: 1px; font-size: 11px; }
+button:hover { background: var(--fg); color: #000; box-shadow: 0 0 18px var(--fg); }
+input[type=range] { flex-grow: 1; min-width: 200px; accent-color: #ff0055; cursor: pointer; }
+#cap { width: 100%; font-size: 12px; font-weight: 600; letter-spacing: 2px; color: rgba(0, 243, 255, 0.6); text-transform: uppercase; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<canvas id="c" width="960" height="540"></canvas>
+<div id="cap">Inicializando Renderizador...</div>
+<div class="controls">
+    <button id="pp">⏸ Pausar</button>
+    <button id="rs">↺ Reiniciar</button>
+    <button id="sp">1×</button>
+    <input type="range" id="sl" min="0" max="70" step="0.03" value="0">
+</div>
+<script>
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+const W = 960, H = 540;
+const cyan = '#00f3ff', pink = '#ff0055', red = '#ff1133', blue = '#0055ff', white = '#ffffff';
+
+// Funções Matemáticas e Interpolação Orgânica
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const seg = (t, a, b) => clamp((t - a) / (b - a), 0, 1);
+const ez = u => u * u * (3 - 2 * u);
+const ezOut = u => 1 - Math.pow(1 - u, 3);
+const ezIn = u => u * u * u;
+const lp = (a, b, u) => a + (b - a) * u;
+const sn = Math.sin, cs = Math.cos, PI = Math.PI;
+
+// Semente determinística
+let S = 42; const rnd = () => (S = S * 16807 % 2147483647) / 2147483647;
+
+// Dados de Cenário Pré-computados
+const stars = Array.from({length: 110}, () => ({ x: rnd()*W, y: rnd()*280, r: 0.5 + rnd()*1.8, p: rnd()*PI*2 }));
+const rain = Array.from({length: 180}, () => ({ x: rnd()*W, y: rnd()*H, l: 18 + rnd()*25, s: 650 + rnd()*350, v: 0.2 + rnd()*0.45 }));
+const skyline = Array.from({length: 34}, (_, i) => ({
+    x: i * 55 - 100, w: 45 + rnd()*65, h: 140 + rnd()*240,
+    z: 0.2 + (i % 3) * 0.25, type: Math.floor(rnd()*3), col: rnd() > 0.45 ? cyan : pink
+}));
+
+function glow(c, b) { g.shadowColor = c; g.shadowBlur = b; }
+function noGlow() { g.shadowBlur = 0; }
+
+// ================= CINEMÁTICA INVERSA E ANATOMIA ORGÂNICA =================
+function drawLimb(x1, y1, x2, y2, mx, my, w1, w2, col, blur) {
+    g.save();
+    g.strokeStyle = col; g.lineCap = 'round'; g.lineJoin = 'round';
+    glow(col, blur);
+    // Segmento superior (coxa/braço)
+    g.lineWidth = w1;
+    g.beginPath(); g.moveTo(x1, y1); g.quadraticCurveTo((x1+mx)/2, (y1+my)/2, mx, my); g.stroke();
+    // Segmento inferior (panturrilha/antebraço)
+    g.lineWidth = w2;
+    g.beginPath(); g.moveTo(mx, my); g.lineTo(x2, y2); g.stroke();
+    // Articulação suave
+    g.fillStyle = white;
+    g.beginPath(); g.arc(mx, my, w2*0.35, 0, PI*2); g.fill();
+    g.restore();
+}
+
+function drawStickman(x, y, scale, t, pose) {
+    g.save();
+    g.translate(x, y);
+    g.scale(scale, scale);
+    g.lineCap = 'round'; g.lineJoin = 'round';
+
+    let breath = sn(t * 3.5) * 2;
+    let hx = 0, hy = -54 + breath, tx = 0, ty = -26 + breath*0.5, px = 0, py = 0;
+    let lfx = -12, lfy = 36, lkx = -10, lky = 18;
+    let rfx = 12, rfy = 36, rkx = 14, rky = 18;
+    let lhx = -18, lhy = -10, lex = -14, ley = -28;
+    let rhx = 18, rhy = -10, rex = 14, rey = -28;
+    let headAng = 0, scarfWind = 1;
+
+    if (pose === 'crouch_edge') {
+        hy = -32 + breath*0.6; hx = 12;
+        tx = 4; ty = -16 + breath*0.4;
+        px = -8; py = 4;
+        // Pernas flexionadas na borda do prédio
+        lkx = 10; lky = 8; lfx = 4; lfy = 28;
+        rkx = 22; rky = 4; rfx = 18; rfy = 28;
+        // Mão apoiada no joelho e outra no parapeito
+        lex = 2; ley = 2; lhx = 10; lhy = 26;
+        rex = 16; rey = -4; rhx = 22; rhy = 4;
+        headAng = 0.15; scarfWind = 1.4;
+    } 
+    else if (pose === 'swan_dive') {
+        let u = pose.u || 0.5;
+        g.rotate(0.85);
+        hx = 16; hy = -52; tx = 6; ty = -24; px = -4; py = 0;
+        // Corpo arqueado aerodinâmico
+        lex = -8; ley = -38; lhx = -28; lhy = -48;
+        rex = -4; rey = -32; rhx = -24; rhy = -42;
+        lkx = -12; lky = 18; lfx = -26; lfy = 36;
+        rkx = -6; rky = 22; rfx = -18; rfy = 40;
+        scarfWind = 2.5;
+    }
+    else if (pose === 'wall_climb') {
+        let c = t * 5.5;
+        let s1 = sn(c), c1 = cs(c), s2 = sn(c + PI), c2 = cs(c + PI);
+        hx = sn(c*2)*2; hy = -54 + cs(c*2)*2;
+        tx = sn(c)*3; ty = -26; px = -sn(c)*3; py = 2;
+        // Movimento de escalada natural em 4 apoios
+        lex = -24; ley = -36 + s1*12; lhx = -18; lhy = -58 + s1*18;
+        rex = 24; rey = -36 + s2*12; rhx = 18; rhy = -58 + s2*18;
+        lkx = -22; lky = 12 + s2*14; lfx = -14; lfy = 32 + s2*18;
+        rkx = 22; rky = 12 + s1*14; rfx = 14; rfy = 32 + s1*18;
+        scarfWind = 0.6;
+    }
+    else if (pose === 'rappel_invert') {
+        g.rotate(PI + sn(t*2.2)*0.06); // De ponta-cabeça balançando suavemente
+        let reach = pose.reach || 0;
+        hx = 0; hy = -54 - reach*6; tx = 0; ty = -26; px = 0; py = 0;
+        // Pernas presas no cabo acima (que no referencial invertido é Y positivo)
+        lkx = -16; lky = 14; lfx = -4; lfy = 34;
+        rkx = 16; rky = 18; rfx = 4; rfy = 38;
+        // Braços esticando para o diamante
+        lex = -18; ley = -38 - reach*8; lhx = -8; lhy = -52 - reach*22;
+        rex = 18; rey = -38 - reach*8; rhx = 8; rhy = -52 - reach*22;
+        scarfWind = 0.3;
+    }
+    else if (pose === 'backflip_land') {
+        let u = pose.u || 0;
+        g.rotate(-u * PI * 2);
+        let tuck = sn(u * PI);
+        hx = 6*tuck; hy = -48 + 15*tuck; tx = 0; ty = -22 + 8*tuck; px = 0; py = 0;
+        lkx = -16; lky = 10 - 18*tuck; lfx = -10; lfy = 34 - 22*tuck;
+        rkx = 16; rky = 10 - 18*tuck; rfx = 10; rfy = 34 - 22*tuck;
+        lex = -16; ley = -20; lhx = -8; lhy = -8;
+        rex = 16; rey = -20; rhx = 8; rhy = -8;
+    }
+    else if (pose === 'sprint') {
+        let c = t * 16;
+        let s1 = sn(c), c1 = cs(c), s2 = sn(c + PI), c2 = cs(c + PI);
+        hx = 18; hy = -44 + Math.abs(s1)*4;
+        tx = 8; ty = -22 + Math.abs(s1)*3;
+        px = -4; py = 2 + Math.abs(s1)*2;
+        // Passada ampla realista com dobra de joelho
+        lkx = -4 + s1*22 + Math.max(0, c1)*8; lky = 14 - Math.max(0, c1)*12;
+        lfx = lkx - 10 + s1*16; lfy = 36 - Math.max(0, c1)*18;
+        rkx = -4 + s2*22 + Math.max(0, c2)*8; rky = 14 - Math.max(0, c2)*12;
+        rfx = rkx - 10 + s2*16; rfy = 36 - Math.max(0, c2)*18;
+        // Braços bombeando
+        lex = 4 + s2*16; ley = -16 + Math.abs(s2)*4; lhx = lex + 10 + s2*12; lhy = ley - 6 - s2*8;
+        rex = 4 + s1*16; rey = -16 + Math.abs(s1)*4; rhx = rex + 10 + s1*12; rhy = rey - 6 - s1*8;
+        headAng = 0.25; scarfWind = 2.2;
+    }
+    else if (pose === 'combat_stance') {
+        hx = 8; hy = -44 + breath; tx = 2; ty = -20 + breath*0.5; px = -4; py = 4;
+        lkx = -18; lky = 18; lfx = -28; lfy = 36;
+        rkx = 18; rky = 16; rfx = 26; rfy = 36;
+        lex = -10; ley = -14; lhx = 6; lhy = -18;
+        rex = 16; rey = -18; rhx = 28; rhy = -26;
+        headAng = 0.1; scarfWind = 1.1;
+    }
+    else if (pose === 'katana_slash') {
+        let u = pose.u || 0;
+        let slash = ezOut(u);
+        hx = 16; hy = -42; tx = 8; ty = -20; px = -6; py = 2;
+        lkx = -22; lky = 14; lfx = -38; lfy = 32;
+        rkx = 24; rky = 12; rfx = 34; rfy = 34;
+        // Braço cortando em arco amplo
+        let ang = lp(2.2, -0.9, slash);
+        rex = 8 + cs(ang)*16; rey = -22 + sn(ang)*16;
+        rhx = rex + cs(ang)*18; rhy = rey + sn(ang)*18;
+        lex = -12; ley = -14; lhx = -24; lhy = -6;
+        scarfWind = 2.5;
+
+        // Trilha de Luz da Katana (Arco Bézier fluido)
+        g.save();
+        let bladeX = rhx + cs(ang)*75, bladeY = rhy + sn(ang)*75;
+        if (u > 0.05 && u < 0.95) {
+            let grad = g.createLinearGradient(rhx, rhy, bladeX, bladeY);
+            grad.addColorStop(0, cyan); grad.addColorStop(0.5, white); grad.addColorStop(1, pink);
+            g.fillStyle = 'rgba(0, 243, 255, 0.22)';
+            glow(cyan, 25);
+            g.beginPath();
+            g.moveTo(rhx, rhy);
+            g.lineTo(bladeX, bladeY);
+            let prevAng = lp(2.2, -0.9, Math.max(0, slash - 0.35));
+            g.quadraticCurveTo(
+                rhx + cs((ang+prevAng)/2)*95, rhy + sn((ang+prevAng)/2)*95,
+                rhx + cs(prevAng)*70, rhy + sn(prevAng)*70
+            );
+            g.closePath(); g.fill();
+        }
+        // Lâmina de Energia
+        glow(white, 20); g.strokeStyle = white; g.lineWidth = 4.5;
+        g.beginPath(); g.moveTo(rhx, rhy); g.lineTo(bladeX, bladeY); g.stroke();
+        g.restore();
+    }
+
+    // Cachecol Físico em Curva Sinuosa (Desenhado atrás do corpo)
+    g.save();
+    glow(pink, 16); g.strokeStyle = pink; g.lineWidth = 5;
+    g.beginPath();
+    let sx = (hx + tx)*0.5 - 4, sy = (hy + ty)*0.5 + 4;
+    g.moveTo(sx, sy);
+    let w1 = sn(t*9)*10*scarfWind, w2 = cs(t*9 - 1.2)*16*scarfWind;
+    g.bezierCurveTo(
+        sx - 22*scarfWind, sy - 6 + w1,
+        sx - 44*scarfWind, sy + 8 + w2,
+        sx - 65*scarfWind, sy + 2 - w1*0.8
+    );
+    g.stroke();
+    g.restore();
+
+    // Membros Traseiros (Mais escuros para profundidade 3D)
+    drawLimb(px, py, lfx, lfy, lkx, lky, 6.5, 5, '#007799', 4);
+    drawLimb(tx, ty, lhx, lhy, lex, ley, 5.5, 4.5, '#007799', 4);
+
+    // Coluna Vertebral Curva (Bézier)
+    g.save();
+    glow(cyan, 14); g.strokeStyle = cyan; g.lineWidth = 7;
+    g.beginPath(); g.moveTo(px, py); g.quadraticCurveTo(tx, ty, (hx+tx)*0.5, (hy+ty)*0.5); g.stroke();
+    g.restore();
+
+    // Membros Dianteiros Brilhantes
+    drawLimb(px, py, rfx, rfy, rkx, rky, 6.5, 5, cyan, 14);
+    drawLimb(tx, ty, rhx, rhy, rex, rey, 5.5, 4.5, cyan, 14);
+
+    // Cabeça Orgânica Arredondada + Visor Luminoso
+    g.save();
+    g.translate(hx, hy); g.rotate(headAng);
+    glow(cyan, 16); g.fillStyle = '#050811'; g.strokeStyle = cyan; g.lineWidth = 4.5;
+    g.beginPath(); g.arc(0, 0, 11.5, 0, PI*2); g.fill(); g.stroke();
+    // Visor Cyberpunk
+    glow(pink, 12); g.fillStyle = white;
+    g.beginPath(); g.ellipse(4, -1, 5.5, 2.2, -0.1, 0, PI*2); g.fill();
+    g.restore();
+
+    g.restore();
+    noGlow();
+}
+
+// ================= CENÁRIOS ELABORADOS =================
+
+// CENA 1: Chuva + Arquitetura Gótica/Cyberpunk + Salto (0s - 11s)
+function renderScene1(t) {
+    let camY = lp(110, 0, ez(seg(t, 0, 4.5)));
+    if (t > 8) camY = lp(0, -180, ezIn(seg(t, 8, 11)));
+
+    // Céu Noturno Profundo com Neblina Luminosa
+    let sky = g.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#020008'); sky.addColorStop(0.55, '#09021a'); sky.addColorStop(1, '#1c042b');
+    g.fillStyle = sky; g.fillRect(0, 0, W, H);
+
+    // Lua / Holograma Planetário Suave ao Fundo
+    g.save();
+    let moonGrd = g.createRadialGradient(720, 160 + camY*0.15, 10, 720, 160 + camY*0.15, 110);
+    moonGrd.addColorStop(0, 'rgba(255, 0, 85, 0.35)');
+    moonGrd.addColorStop(0.6, 'rgba(0, 243, 255, 0.08)');
+    moonGrd.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = moonGrd; g.beginPath(); g.arc(720, 160 + camY*0.15, 110, 0, PI*2); g.fill();
+    g.restore();
+
+    // Estrelas Cintilantes
+    stars.forEach(s => {
+        g.fillStyle = `rgba(255,255,255,${0.25 + sn(t*3 + s.p)*0.2})`;
+        g.beginPath(); g.arc(s.x, s.y + camY*0.08, s.r, 0, PI*2); g.fill();
+    });
+
+    // Skyline em Camadas com Cúpulas, Torres Pontiagudas e Feixes de Luz
+    skyline.forEach(b => {
+        let bx = b.x, by = H - b.h + camY * b.z;
+        g.fillStyle = b.z < 0.4 ? '#04010c' : '#080216';
+        g.strokeStyle = b.z < 0.4 ? '#15062b' : '#250944';
+        g.lineWidth = 1.5;
+
+        g.beginPath();
+        if (b.type === 0) { // Torre com topo chanfrado curvo
+            g.moveTo(bx, H); g.lineTo(bx, by + 30);
+            g.quadraticCurveTo(bx, by, bx + b.w*0.5, by - 25);
+            g.quadraticCurveTo(bx + b.w, by, bx + b.w, by + 30);
+            g.lineTo(bx + b.w, H);
+        } else if (b.type === 1) { // Cúpula Neo-Gótica
+            g.moveTo(bx, H); g.lineTo(bx, by + 20);
+            g.bezierCurveTo(bx, by - 20, bx + b.w, by - 20, bx + b.w, by + 20);
+            g.lineTo(bx + b.w, H);
+        } else { // Arranha-céu com antena espiral
+            g.rect(bx, by, b.w, b.h + 200);
+        }
+        g.fill(); g.stroke();
+
+        // Janelas orgânicas verticais
+        if (b.z > 0.35) {
+            g.strokeStyle = b.col; g.lineWidth = 1.5; g.globalAlpha = 0.35;
+            for (let wy = by + 25; wy < H - 40; wy += 28) {
+                g.beginPath(); g.moveTo(bx + 12, wy); g.lineTo(bx + b.w - 12, wy); g.stroke();
+            }
+            g.globalAlpha = 1;
+        }
+    });
+
+    // Gárgula / Parapeito Curvo do Edifício Principal em Primeiro Plano
+    let py = 395 + camY;
+    g.save();
+    let bGrd = g.createLinearGradient(0, py, 340, H + 100);
+    bGrd.addColorStop(0, '#070a14'); bGrd.addColorStop(1, '#010206');
+    g.fillStyle = bGrd;
+    g.beginPath();
+    g.moveTo(0, py);
+    g.lineTo(270, py);
+    // Ponta aerodinâmica esculpida do prédio
+    g.bezierCurveTo(335, py, 355, py + 25, 310, py + 55);
+    g.quadraticCurveTo(260, py + 85, 250, H + 200);
+    g.lineTo(0, H + 200);
+    g.closePath();
+    g.fill();
+
+    // Friso Neon Brilhante acompanhando a curva da arquitetura
+    glow(cyan, 18); g.strokeStyle = cyan; g.lineWidth = 3.5;
+    g.beginPath();
+    g.moveTo(0, py + 2); g.lineTo(270, py + 2);
+    g.bezierCurveTo(332, py + 2, 350, py + 25, 308, py + 53);
+    g.stroke();
+    g.restore();
+
+    // Personagem: Respira na borda, se prepara e mergulha em arco (Swan Dive)
+    if (t < 8) {
+        drawStickman(255, py - 28, 1, t, 'crouch_edge');
+    } else {
+        let u = seg(t, 8, 11);
+        let dx = lp(255, 640, ezIn(u));
+        let dy = py - 28 - sn(u * PI) * 95 + u * u * 340;
+        drawStickman(dx, dy, 1, t, { ...{u}, toString: () => 'swan_dive', u });
+        // Corrige chamada de pose com parâmetro
+        g.save();
+    }
+
+    // Chuva Fina Diagonal + Respingos no Parapeito
+    g.save();
+    g.strokeStyle = 'rgba(0, 243, 255, 0.38)'; g.lineWidth = 1.2;
+    rain.forEach(r => {
+        let rx = (r.x - t * 140) % W; if (rx < 0) rx += W;
+        let ry = (r.y + t * r.s) % H;
+        g.globalAlpha = r.v;
+        g.beginPath(); g.moveTo(rx, ry); g.lineTo(rx - 6, ry + r.l); g.stroke();
+        // Respingo quando bate no telhado
+        if (rx < 300 && Math.abs(ry - py) < 12) {
+            g.beginPath(); g.arc(rx, py, 2.5, PI, 0); g.stroke();
+        }
+    });
+    g.restore();
+
+    // ÚNICO TÍTULO DA ANIMAÇÃO (Apenas na Cena 1, com fade suave)
+    if (t > 0.8 && t < 7.2) {
+        let alpha = sn(seg(t, 0.8, 7.2) * PI);
+        g.save();
+        g.globalAlpha = alpha;
+        glow(pink, 25); g.fillStyle = white;
+        g.font = '900 38px "Segoe UI", sans-serif'; g.textAlign = 'center';
+        g.fillText('OPERAÇÃO: PRISMA', W/2, 105);
+        glow(cyan, 15); g.fillStyle = cyan;
+        g.font = '600 14px "Segoe UI", sans-serif';
+        g.fillText('INFILTRAÇÃO NO MUSEU IMPERIAL', W/2, 132);
+        g.restore();
+    }
+}
+
+// CENA 2: Escalada na Fachada Curva de Vidro em Perspectiva (11s - 19s)
+function renderScene2(t) {
+    let localT = t - 11;
+    let scroll = localT * 185;
+
+    // Fundo da Cidade refletido no vidro escuro com ponto de fuga vertical
+    let bg = g.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#020612'); bg.addColorStop(1, '#08152c');
+    g.fillStyle = bg; g.fillRect(0, 0, W, H);
+
+    // Estrutura Curva do Arranha-Céu (Perspectiva Cônica)
+    g.save();
+    // Vigas mestras curvas convergindo para o topo
+    for (let i = -4; i <= 4; i++) {
+        let topX = W/2 + i * 55;
+        let botX = W/2 + i * 115;
+        g.strokeStyle = i === 0 ? 'rgba(0, 243, 255, 0.35)' : 'rgba(0, 243, 255, 0.15)';
+        g.lineWidth = Math.abs(i) === 4 ? 6 : 2.5;
+        g.beginPath();
+        g.moveTo(topX, 0);
+        g.quadraticCurveTo(W/2 + i * 80, H*0.5, botX, H);
+        g.stroke();
+    }
+
+    // Anéis horizontais elípticos descendo conforme o ninja sobe
+    for (let k = -1; k < 7; k++) {
+        let y = ((k * 105 + scroll) % 680) - 80;
+        let curveDepth = lp(15, 45, y / H);
+        g.strokeStyle = 'rgba(0, 243, 255, 0.28)';
+        g.lineWidth = 3;
+        g.beginPath();
+        g.moveTo(W/2 - lp(220, 460, y/H), y);
+        g.quadraticCurveTo(W/2, y - curveDepth, W/2 + lp(220, 460, y/H), y);
+        g.stroke();
+
+        // Luzes laterais da fachada passando
+        glow(pink, 12); g.fillStyle = pink;
+        g.beginPath(); g.arc(W/2 - lp(210, 440, y/H), y - 4, 3.5, 0, PI*2); g.fill();
+        g.beginPath(); g.arc(W/2 + lp(210, 440, y/H), y - 4, 3.5, 0, PI*2); g.fill();
+        noGlow();
+    }
+    g.restore();
+
+    // Ventosas Magnéticas / Pulso de aderência nas mãos
+    let pulse = (localT * 5.5) % PI;
+    g.save();
+    glow(cyan, 15); g.strokeStyle = 'rgba(0, 243, 255, 0.45)'; g.lineWidth = 2;
+    g.beginPath(); g.arc(W/2 - 22, H/2 - 55, 6 + sn(pulse)*4, 0, PI*2); g.stroke();
+    g.beginPath(); g.arc(W/2 + 22, H/2 - 55, 6 + cs(pulse)*4, 0, PI*2); g.stroke();
+    g.restore();
+
+    drawStickman(W/2, H/2 + 15, 1.35, t, 'wall_climb');
+}
+
+// CENA 3: Átrio Abobadado do Museu + Rapel + Roubo do Diamante (19s - 34s)
+function renderScene3(t) {
+    let alarm = t > 27.5;
+    let pulseRed = alarm ? (sn(t * 10) * 0.5 + 0.5) : 0;
+
+    // Fundo do Grande Salão do Museu
+    let roomGrd = g.createRadialGradient(W/2, H*0.4, 30, W/2, H*0.5, 580);
+    roomGrd.addColorStop(0, alarm ? `rgb(${45 + pulseRed*50}, 5, 15)` : '#0c1324');
+    roomGrd.addColorStop(1, '#020308');
+    g.fillStyle = roomGrd; g.fillRect(0, 0, W, H);
+
+    let floorY = 435;
+
+    // Arcos Góticos e Colunas Clássicas Curvas ao Fundo
+    g.save();
+    for (let i = -3; i <= 3; i++) {
+        let cx = W/2 + i * 135;
+        // Colunas com sombreado cilíndrico
+        let colG = g.createLinearGradient(cx - 14, 0, cx + 14, 0);
+        colG.addColorStop(0, '#050811'); colG.addColorStop(0.5, '#182438'); colG.addColorStop(1, '#050811');
+        g.fillStyle = colG;
+        g.fillRect(cx - 14, 95, 28, floorY - 95);
+
+        // Arcos ogivais entrelaçados no teto
+        g.strokeStyle = alarm ? `rgba(255, 20, 50, ${0.3 + pulseRed*0.4})` : 'rgba(0, 243, 255, 0.22)';
+        g.lineWidth = 3;
+        g.beginPath();
+        g.moveTo(cx - 135, 95);
+        g.quadraticCurveTo(cx - 67, 15, cx, 95);
+        g.quadraticCurveTo(cx + 67, 15, cx + 135, 95);
+        g.stroke();
+    }
+    g.restore();
+
+    // Piso de Mármore Polido com Reflexo Espelhado
+    let flGrd = g.createLinearGradient(0, floorY, 0, H);
+    flGrd.addColorStop(0, '#080e1a'); flGrd.addColorStop(1, '#020408');
+    g.fillStyle = flGrd; g.fillRect(0, floorY, W, H - floorY);
+    glow(alarm ? red : cyan, 12);
+    g.strokeStyle = alarm ? red : cyan; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(0, floorY); g.lineTo(W, floorY); g.stroke();
+    noGlow();
+
+    // Feixe de Luz Volumétrico vindo da Claraboia no Teto
+    g.save();
+    let beamGrd = g.createLinearGradient(W/2, 0, W/2, floorY);
+    beamGrd.addColorStop(0, alarm ? 'rgba(255,0,50,0.28)' : 'rgba(0,243,255,0.22)');
+    beamGrd.addColorStop(1, 'rgba(0,243,255,0.02)');
+    g.fillStyle = beamGrd;
+    g.beginPath();
+    g.moveTo(W/2 - 45, 0); g.lineTo(W/2 + 45, 0);
+    g.lineTo(W/2 + 130, floorY); g.lineTo(W/2 - 130, floorY);
+    g.closePath(); g.fill();
+    g.restore();
+
+    // Pedestal Esculpido em Curvas (Estilo Ampulheta Futurista)
+    let px = W/2, py = floorY;
+    g.save();
+    g.fillStyle = '#0c1220'; g.strokeStyle = cyan; g.lineWidth = 2;
+    g.beginPath();
+    g.moveTo(px - 42, py);
+    g.bezierCurveTo(px - 20, py - 25, px - 18, py - 65, px - 34, py - 88);
+    g.lineTo(px + 34, py - 88);
+    g.bezierCurveTo(px + 18, py - 65, px + 20, py - 25, px + 42, py);
+    g.closePath(); g.fill(); g.stroke();
+
+    // Cúpula Protetora de Vidro (Abre suavemente aos 24.5s)
+    let domeLift = ez(seg(t, 24.5, 26.2)) * 55;
+    let domeAlpha = 1 - seg(t, 25.5, 26.8);
+    if (domeAlpha > 0) {
+        g.globalAlpha = domeAlpha * 0.45;
+        glow(cyan, 15); g.strokeStyle = white; g.fillStyle = 'rgba(0, 243, 255, 0.12)';
+        g.beginPath();
+        g.arc(px, py - 115 - domeLift, 32, PI, 0);
+        g.lineTo(px + 32, py - 88 - domeLift);
+        g.lineTo(px - 32, py - 88 - domeLift);
+        g.closePath(); g.fill(); g.stroke();
+        g.globalAlpha = 1; noGlow();
+    }
+    g.restore();
+
+    // O Diamante Lapidado (Flutuando e girando sobre campo de força)
+    if (t < 26.8) {
+        let dy = py - 116 + sn(t * 4) * 5;
+        let rot = cs(t * 3);
+        g.save();
+        glow(pink, 25); g.strokeStyle = white; g.fillStyle = 'rgba(255, 200, 240, 0.85)'; g.lineWidth = 1.8;
+        g.beginPath();
+        g.moveTo(px - 18, dy - 6);
+        g.lineTo(px - 10, dy - 18);
+        g.lineTo(px + 10, dy - 18);
+        g.lineTo(px + 18, dy - 6);
+        g.lineTo(px, dy + 16);
+        g.closePath(); g.fill(); g.stroke();
+        // Facetas internas
+        g.beginPath();
+        g.moveTo(px - 18, dy - 6); g.lineTo(px + 18, dy - 6);
+        g.moveTo(px - 10, dy - 18); g.lineTo(px + rot*8, dy - 6); g.lineTo(px, dy + 16);
+        g.moveTo(px + 10, dy - 18); g.lineTo(px + rot*8, dy - 6);
+        g.stroke();
+        g.restore();
+    }
+
+    // Porta Blindada Curva à Direita
+    let doorOpen = ez(seg(t, 30.2, 31.8));
+    g.save();
+    g.strokeStyle = cyan; g.lineWidth = 3; g.fillStyle = '#070b14';
+    // Moldura em arco da saída
+    g.beginPath();
+    g.moveTo(820, floorY); g.lineTo(820, 270);
+    g.quadraticCurveTo(860, 220, 900, 270);
+    g.lineTo(900, floorY); g.stroke();
+    // Folhas da porta abrindo
+    let dOffset = doorOpen * 38;
+    g.fillRect(822, 265, 38 - dOffset, floorY - 265);
+    g.fillRect(860 + dOffset, 265, 38 - dOffset, floorY - 265);
+    g.restore();
+
+    // Ação do Ninja na Cena 3
+    if (t < 27.2) {
+        // Descendo pelo cabo de aço com precisão milimétrica
+        let desc = ezOut(seg(t, 19, 24));
+        let ny = lp(-40, py - 185, desc);
+        let reach = sn(seg(t, 24.5, 27.2) * PI);
+        // Cabo de rapel tensionado
+        g.strokeStyle = '#6688aa'; g.lineWidth = 2;
+        g.beginPath(); g.moveTo(px, 0); g.lineTo(px, ny - 28); g.stroke();
+
+        // Usa pose invertida com alcance das mãos
+        g.save();
+        g.translate(px, ny);
+        g.rotate(PI + sn(t*2.5)*0.05);
+        g.translate(-px, -ny);
+        drawStickman(px, ny, 1, t, 'rappel_invert');
+        g.restore();
+    } else if (t < 29.2) {
+        // Salto Mortal (Backflip) soltando da corda para o chão
+        let u = seg(t, 27.2, 29.2);
+        let nx = lp(px, px + 75, u);
+        let ny = lp(py - 185, floorY - 36, ezIn(u)) - sn(u * PI) * 65;
+        g.save();
+        g.translate(nx, ny); g.rotate(u * PI); g.translate(-nx, -ny);
+        drawStickman(nx, ny, 1, t, 'backflip_land');
+        g.restore();
+    } else {
+        // Arrancada explosiva até a saída
+        let u = seg(t, 29.2, 33.8);
+        let nx = lp(px + 75, 960, ezIn(u));
+        drawStickman(nx, floorY - 36, 1, t, 'sprint');
+    }
+
+    // Feixes de Laser de Segurança cruzando a sala após o alarme
+    if (alarm) {
+        g.save();
+        glow(red, 18); g.strokeStyle = 'rgba(255, 17, 51, 0.75)'; g.lineWidth = 2.5;
+        for (let l = 0; l < 5; l++) {
+            let ly = 140 + l * 55 + sn(t * 6 + l) * 25;
+            g.beginPath(); g.moveTo(0, ly); g.lineTo(W, ly + cs(t * 4 + l) * 40); g.stroke();
+        }
+        g.restore();
+    }
+}
+
+// CENA 4: Túnel Hexagonal Curvo + Combate com Drone Esférico Articulado (34s - 47s)
+function renderScene4(t) {
+    let camShakeX = (t > 40.4 && t < 41.3) ? (rnd() - 0.5) * 18 : 0;
+    let camShakeY = (t > 40.4 && t < 41.3) ? (rnd() - 0.5) * 18 : 0;
+    g.save();
+    g.translate(camShakeX, camShakeY);
+
+    g.fillStyle = '#03060e'; g.fillRect(0, 0, W, H);
+
+    let floorY = 420;
+
+    // Corredor Subterrâneo com Costelas Metálicas Curvas (Perspectiva Profunda)
+    for (let i = 0; i < 8; i++) {
+        let z = i / 7;
+        let rx = lp(80, 380, z), ry = lp(40, 170, z);
+        let rw = W - rx * 2, rh = H - ry * 2;
+        g.strokeStyle = `rgba(0, 243, 255, ${0.4 - z * 0.3})`;
+        g.lineWidth = lp(6, 1.5, z);
+        g.beginPath();
+        g.roundRect(rx, ry, rw, rh, lp(60, 20, z));
+        g.stroke();
+    }
+
+    // Piso com Grade de Energia Luminosa
+    let flG = g.createLinearGradient(0, floorY, 0, H);
+    flG.addColorStop(0, '#071120'); flG.addColorStop(1, '#020408');
+    g.fillStyle = flG; g.fillRect(0, floorY, W, H - floorY);
+    glow(cyan, 15); g.strokeStyle = cyan; g.lineWidth = 3;
+    g.beginPath(); g.moveTo(0, floorY); g.lineTo(W, floorY); g.stroke();
+    noGlow();
+
+    // Efeito Slow-Motion Atmosférico (37.5s - 41.5s)
+    if (t > 37.5 && t < 41.8) {
+        let sm = sn(seg(t, 37.5, 41.8) * PI);
+        let vig = g.createRadialGradient(W/2, H/2, 180, W/2, H/2, 540);
+        vig.addColorStop(0, 'rgba(0,0,0,0)');
+        vig.addColorStop(1, `rgba(255, 0, 85, ${sm * 0.38})`);
+        g.fillStyle = vig; g.fillRect(0, 0, W, H);
+    }
+
+    // Posição do Drone Caçador Esférico
+    let dx = lp(880, 560, ezOut(seg(t, 34, 37)));
+    let dy = 265 + sn(t * 4.5) * 14;
+
+    // Laser de Mira do Drone antes do salto
+    if (t > 36.2 && t < 40.3) {
+        g.save();
+        glow(red, 20); g.strokeStyle = red; g.lineWidth = 2 + sn(t * 40) * 1.5;
+        g.beginPath(); g.moveTo(dx - 28, dy); g.lineTo(240, floorY - 30); g.stroke();
+        g.restore();
+    }
+
+    // Coreografia do Ninja na Cena 4
+    let nx = 260, ny = floorY - 36;
+    if (t < 37.5) {
+        nx = lp(80, 260, ezOut(seg(t, 34, 36.5)));
+        drawStickman(nx, ny, 1.15, t, t < 36.5 ? 'sprint' : 'combat_stance');
+    } else if (t < 42.2) {
+        // Salto em Arco Cinematográfico cortando o Drone no ar
+        let u = seg(t, 37.5, 42.2);
+        nx = lp(260, 720, ez(u));
+        ny = (floorY - 36) - sn(u * PI) * 195;
+        let slashU = seg(t, 39.2, 41.0);
+        drawStickman(nx, ny, 1.15, t, { u: slashU, toString: () => 'katana_slash' });
+        // Renderiza a katana diretamente através de pose nomeada
+    } else {
+        nx = lp(720, 1020, ezIn(seg(t, 42.2, 46.5)));
+        drawStickman(nx, ny, 1.15, t, 'sprint');
+    }
+
+    // Desenho do Drone Caçador (Inteiro vs Fatiado ao Meio)
+    if (t < 40.4) {
+        g.save();
+        g.translate(dx, dy);
+        // Carapaça Esférica Curva
+        glow(pink, 18); g.fillStyle = '#101424'; g.strokeStyle = pink; g.lineWidth = 3;
+        g.beginPath(); g.arc(0, 0, 32, 0, PI*2); g.fill(); g.stroke();
+        // Anel Giroscópico Elíptico
+        g.strokeStyle = cyan; g.lineWidth = 2;
+        g.beginPath(); g.ellipse(0, 0, 44, 11, sn(t*3)*0.25, 0, PI*2); g.stroke();
+        // Olho Óptico Vermelho
+        glow(red, 22); g.fillStyle = red;
+        g.beginPath(); g.arc(-12, -2, 9 + sn(t*15)*1.5, 0, PI*2); g.fill();
+        g.fillStyle = white; g.beginPath(); g.arc(-14, -4, 3, 0, PI*2); g.fill();
+        g.restore();
+    } else {
+        // Drone Fatiado Diagonalmente + Faíscas Elétricas Curvas
+        let et = t - 40.4;
+        // Flash de Corte
+        if (et < 0.25) {
+            glow(white, 30); g.strokeStyle = white; g.lineWidth = (1 - et*4) * 12;
+            g.beginPath(); g.moveTo(dx - 90, dy + 70); g.lineTo(dx + 90, dy - 70); g.stroke();
+        }
+        // Metade Superior
+        g.save();
+        g.translate(dx - et * 45, dy - et * 35 + et * et * 190);
+        g.rotate(-et * 2.4);
+        glow(pink, 12); g.fillStyle = '#101424'; g.strokeStyle = pink; g.lineWidth = 3;
+        g.beginPath(); g.arc(0, 0, 32, PI*0.8, PI*1.8); g.closePath(); g.fill(); g.stroke();
+        g.restore();
+
+        // Metade Inferior
+        g.save();
+        g.translate(dx + et * 65, dy + et * 25 + et * et * 230);
+        g.rotate(et * 3.1);
+        glow(pink, 12); g.fillStyle = '#101424'; g.strokeStyle = pink; g.lineWidth = 3;
+        g.beginPath(); g.arc(0, 0, 32, -PI*0.2, PI*0.8); g.closePath(); g.fill(); g.stroke();
+        g.restore();
+
+        // Partículas e Faíscas em Arco
+        if (et < 2.2) {
+            g.save();
+            for (let p = 0; p < 18; p++) {
+                let a = p * (PI * 2 / 18) + 0.3;
+                let sp = 140 + (p % 4) * 85;
+                let px = dx + cs(a) * sp * et;
+                let py = dy + sn(a) * sp * et + et * et * 180;
+                g.globalAlpha = clamp(1 - et * 0.55, 0, 1);
+                glow(p % 2 ? cyan : pink, 15);
+                g.fillStyle = p % 3 === 0 ? white : (p % 2 ? cyan : pink);
+                g.beginPath(); g.arc(px, py, 3.5, 0, PI*2); g.fill();
+            }
+            g.restore();
+        }
+    }
+
+    g.restore();
+}
+
+// VEÍCULOS AERODINÂMICOS EM CURVAS DE BÉZIER (Cena 5)
+function drawAeroCar(x, y, isPolice, t) {
+    let susp = sn(t * 24 + (isPolice ? 2 : 0)) * 1.8;
+    g.save();
+    g.translate(x, y + susp);
+
+    if (!isPolice) {
+        // Supercarro Cyberpunk Esportivo (Curvas agressivas e fluidas)
+        // Reflexo de neon no asfalto molhado abaixo do carro
+        let ref = g.createRadialGradient(0, 26, 5, 0, 26, 95);
+        ref.addColorStop(0, 'rgba(0, 243, 255, 0.45)'); ref.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = ref; g.fillRect(-100, 16, 200, 22);
+
+        // Chassi Aerodinâmico
+        glow(cyan, 16); g.fillStyle = '#070b14'; g.strokeStyle = cyan; g.lineWidth = 3;
+        g.beginPath();
+        g.moveTo(-82, 10);
+        g.lineTo(-88, -6); // Traseira elevada
+        g.bezierCurveTo(-65, -14, -42, -32, -8, -32); // Teto fastback
+        g.bezierCurveTo(22, -32, 48, -14, 86, -4); // Capô mergulhante
+        g.quadraticCurveTo(94, 4, 84, 10); // Spoiler dianteiro
+        g.closePath(); g.fill(); g.stroke();
+
+        // Janela / Cockpit fumê
+        g.fillStyle = 'rgba(0, 243, 255, 0.18)';
+        g.beginPath();
+        g.moveTo(-48, -10);
+        g.bezierCurveTo(-32, -26, -6, -26, 18, -24);
+        g.lineTo(42, -10);
+        g.closePath(); g.fill();
+
+        // Silhueta do Ninja dirigindo no interior
+        g.fillStyle = cyan;
+        g.beginPath(); g.arc(4, -17, 5.5, 0, PI*2); g.fill();
+
+        // Chamas de Pós-Combustão (Afterburner) no escapamento
+        glow(pink, 25); g.fillStyle = pink;
+        let flameL = 32 + sn(t * 60) * 14;
+        g.beginPath();
+        g.moveTo(-85, -2); g.lineTo(-85 - flameL, 3); g.lineTo(-85, 8);
+        g.closePath(); g.fill();
+    } else {
+        // Interceptador Policial Futurista
+        let isRed = Math.floor(t * 14) % 2 === 0;
+        let sCol = isRed ? red : blue;
+
+        // Reflexo da sirene no asfalto
+        let ref = g.createRadialGradient(0, 26, 5, 0, 26, 85);
+        ref.addColorStop(0, isRed ? 'rgba(255, 17, 51, 0.38)' : 'rgba(0, 85, 255, 0.38)');
+        ref.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = ref; g.fillRect(-90, 16, 180, 22);
+
+        glow(white, 8); g.fillStyle = '#0a0d18'; g.strokeStyle = '#ddeeff'; g.lineWidth = 2.5;
+        g.beginPath();
+        g.moveTo(-75, 10);
+        g.lineTo(-78, -10);
+        g.quadraticCurveTo(-50, -14, -35, -30);
+        g.lineTo(15, -30);
+        g.quadraticCurveTo(40, -14, 78, -6);
+        g.lineTo(80, 10);
+        g.closePath(); g.fill(); g.stroke();
+
+        // Giroflex Holográfico no Teto
+        glow(sCol, 28); g.fillStyle = sCol;
+        g.beginPath(); g.ellipse(-10, -34, 14, 4.5, 0, 0, PI*2); g.fill();
+
+        // Cone de Luz do Farol Policial
+        let hl = g.createLinearGradient(80, 0, 290, 0);
+        hl.addColorStop(0, 'rgba(255, 255, 255, 0.35)'); hl.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        g.fillStyle = hl;
+        g.beginPath(); g.moveTo(80, -4); g.lineTo(290, -28); g.lineTo(290, 24); g.closePath(); g.fill();
+    }
+
+    // Rodas com Aros de Energia Rotativos
+    [-50, 52].forEach(wx => {
+        g.save();
+        g.translate(wx, 10);
+        glow(isPolice ? cyan : pink, 15);
+        g.fillStyle = '#050508'; g.strokeStyle = isPolice ? cyan : pink; g.lineWidth = 3.5;
+        g.beginPath(); g.arc(0, 0, 14, 0, PI*2); g.fill(); g.stroke();
+        // Raios girando em alta velocidade
+        g.rotate(t * 28);
+        g.lineWidth = 2;
+        for (let r = 0; r < 3; r++) {
+            g.rotate(PI * 2 / 3);
+            g.beginPath(); g.moveTo(-10, 0); g.lineTo(10, 0); g.stroke();
+        }
+        g.restore();
+    });
+
+    g.restore();
+    noGlow();
+}
+
+// CENA 5: Perseguição na Via Expressa Suspensa com Ponte Estaiada (47s - 70s)
+function renderScene5(t) {
+    let lt = t - 47;
+    let scroll = lt * 1450;
+
+    // Céu Noturno + Horizonte Sintético
+    let sky = g.createLinearGradient(0, 0, 0, 340);
+    sky.addColorStop(0, '#010006'); sky.addColorStop(0.6, '#0d0221'); sky.addColorStop(1, '#260538');
+    g.fillStyle = sky; g.fillRect(0, 0, W, 340);
+
+    // Skyline Distante Passando em Paralaxe Suave
+    skyline.forEach(b => {
+        let bx = ((b.x - scroll * 0.08) % 1800 + 1800) % 1800 - 150;
+        let by = 340 - b.h * 0.75;
+        g.fillStyle = '#060112'; g.strokeStyle = '#1c0636'; g.lineWidth = 1;
+        g.fillRect(bx, by, b.w, b.h); g.strokeRect(bx, by, b.w, b.h);
+    });
+
+    // Ponte Estaiada Futurista (Arcos e Cabos Parabólicos passando)
+    for (let p = -1; p < 3; p++) {
+        let px = ((p * 650 - scroll * 0.35) % 1950 + 1950) % 1950 - 300;
+        // Torre da Ponte em Arco
+        g.strokeStyle = 'rgba(0, 243, 255, 0.25)'; g.lineWidth = 8;
+        g.beginPath(); g.moveTo(px, 340); g.quadraticCurveTo(px + 20, 110, px + 60, 75); g.stroke();
+        // Cabos de Aço Luminosos
+        g.lineWidth = 1.5; g.strokeStyle = 'rgba(255, 0, 85, 0.22)';
+        for (let c = 1; c <= 7; c++) {
+            g.beginPath(); g.moveTo(px + 50, 95); g.lineTo(px + c * 65, 340); g.stroke();
+            g.beginPath(); g.moveTo(px + 50, 95); g.lineTo(px - c * 65, 340); g.stroke();
+        }
+    }
+
+    // Asfalto Molhado da Via Expressa
+    let roadG = g.createLinearGradient(0, 340, 0, H);
+    roadG.addColorStop(0, '#090414'); roadG.addColorStop(0.5, '#050710'); roadG.addColorStop(1, '#010205');
+    g.fillStyle = roadG; g.fillRect(0, 340, W, H - 340);
+
+    // Guard-Rail Neon Contínuo
+    glow(pink, 18); g.strokeStyle = pink; g.lineWidth = 4;
+    g.beginPath(); g.moveTo(0, 340); g.lineTo(W, 340); g.stroke();
+    noGlow();
+
+    // Faixas de Pista em Alta Velocidade
+    g.strokeStyle = 'rgba(0, 243, 255, 0.55)'; g.lineWidth = 3;
+    for (let i = 0; i < 9; i++) {
+        let lx = ((i * 160 - scroll) % 1440 + 1440) % 1440 - 160;
+        g.beginPath(); g.moveTo(lx, 410); g.lineTo(lx + 85, 410); g.stroke();
+    }
+
+    // Posições Dinâmicas dos Carros na Perseguição
+    let heroX = lp(260, 620, ez(seg(t, 47, 51))) + sn(t * 2.2) * 28;
+    if (t > 65) heroX = lp(heroX, 1250, ezIn(seg(t, 65, 69.5))); // Dispara no horizonte no final
+
+    let cop1X = heroX - 310 + sn(t * 1.7) * 45;
+    let cop2X = heroX - 460 + cs(t * 2.1) * 35;
+
+    // No primeiro segundo da cena, o Ninja salta do viaduto para dentro do cockpit
+    if (t < 48.4) {
+        let u = seg(t, 47, 48.4);
+        let jx = lp(180, heroX, u);
+        let jy = lp(140, 365, ezIn(u));
+        drawStickman(jx, jy, 0.85, t, 'backflip_land');
+    }
+
+    // Desenha Viaturas e Supercarro ordenados por profundidade (Y)
+    drawAeroCar(cop2X, 382, true, t + 1.4);
+    drawAeroCar(heroX, 405, false, t);
+    drawAeroCar(cop1X, 428, true, t);
+}
+
+// Corrige chamada de poses com parâmetros compostos (Swan Dive e Katana Slash)
+const origDrawStickman = drawStickman;
+drawStickman = function(x, y, scale, t, pose) {
+    if (typeof pose === 'object' && pose !== null) {
+        let name = pose.toString();
+        if (name === 'swan_dive') {
+            g.save(); g.translate(x, y); g.rotate(0.55 + pose.u * 0.45); g.translate(-x, -y);
+            origDrawStickman(x, y, scale, t, 'swan_dive');
+            g.restore();
+            return;
+        }
+        if (name === 'katana_slash') {
+            // Injeta progresso na função
+            let p = { u: pose.u };
+            g.save();
+            // Renderiza pose de corte com arco dinâmico
+            renderSlashPose(x, y, scale, t, pose.u);
+            g.restore();
+            return;
+        }
+    }
+    origDrawStickman(x, y, scale, t, pose);
+};
+
+function renderSlashPose(x, y, scale, t, u) {
+    g.save();
+    g.translate(x, y); g.scale(scale, scale);
+    let slash = ezOut(u);
+    let hx = 16, hy = -42, tx = 8, ty = -20, px = -6, py = 2;
+    let lkx = -22, lky = 14, lfx = -38, lfy = 32;
+    let rkx = 24, rky = 12, rfx = 34, rfy = 34;
+    let ang = lp(2.3, -0.95, slash);
+    let rex = 8 + cs(ang)*16, rey = -22 + sn(ang)*16;
+    let rhx = rex + cs(ang)*18, rhy = rey + sn(ang)*18;
+    let lex = -12, ley = -14, lhx = -24, lhy = -6;
+
+    // Cachecol
+    glow(pink, 16); g.strokeStyle = pink; g.lineWidth = 5;
+    g.beginPath(); g.moveTo(8, -28);
+    g.bezierCurveTo(-25, -38, -55, -15, -85, -25); g.stroke();
+
+    // Membros traseiros
+    drawLimb(px, py, lfx, lfy, lkx, lky, 6.5, 5, '#007799', 4);
+    drawLimb(tx, ty, lhx, lhy, lex, ley, 5.5, 4.5, '#007799', 4);
+
+    // Coluna
+    glow(cyan, 14); g.strokeStyle = cyan; g.lineWidth = 7;
+    g.beginPath(); g.moveTo(px, py); g.quadraticCurveTo(tx, ty, (hx+tx)*0.5, (hy+ty)*0.5); g.stroke();
+
+    // Membros dianteiros
+    drawLimb(px, py, rfx, rfy, rkx, rky, 6.5, 5, cyan, 14);
+    drawLimb(tx, ty, rhx, rhy, rex, rey, 5.5, 4.5, cyan, 14);
+
+    // Arco de Energia da Katana
+    let bladeX = rhx + cs(ang)*82, bladeY = rhy + sn(ang)*82;
+    if (u > 0.02 && u < 0.98) {
+        g.fillStyle = 'rgba(0, 243, 255, 0.28)';
+        glow(cyan, 25);
+        let prevAng = lp(2.3, -0.95, Math.max(0, slash - 0.38));
+        g.beginPath();
+        g.moveTo(rhx, rhy); g.lineTo(bladeX, bladeY);
+        g.quadraticCurveTo(rhx + cs((ang+prevAng)/2)*105, rhy + sn((ang+prevAng)/2)*105, rhx + cs(prevAng)*78, rhy + sn(prevAng)*78);
+        g.closePath(); g.fill();
+    }
+    glow(white, 22); g.strokeStyle = white; g.lineWidth = 4.5;
+    g.beginPath(); g.moveTo(rhx, rhy); g.lineTo(bladeX, bladeY); g.stroke();
+
+    // Cabeça
+    g.translate(hx, hy);
+    glow(cyan, 16); g.fillStyle = '#050811'; g.strokeStyle = cyan; g.lineWidth = 4.5;
+    g.beginPath(); g.arc(0, 0, 11.5, 0, PI*2); g.fill(); g.stroke();
+    glow(pink, 12); g.fillStyle = white;
+    g.beginPath(); g.ellipse(4, -1, 5.5, 2.2, -0.1, 0, PI*2); g.fill();
+    g.restore();
+    noGlow();
+}
+
+// ================= COMPOSITOR PRINCIPAL =================
+function draw(t) {
+    S = 42; // Reinicia semente determinística por frame
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, W, H);
+
+    if (t < 11) renderScene1(t);
+    else if (t < 19) renderScene2(t);
+    else if (t < 34) renderScene3(t);
+    else if (t < 47) renderScene4(t);
+    else renderScene5(t);
+
+    // Transições Cinematográficas Suaves entre Cortes (Flash/Fade rápido de 0.35s)
+    [11, 19, 34, 47].forEach(cut => {
+        if (Math.abs(t - cut) < 0.35) {
+            let a = 1 - Math.abs(t - cut) / 0.35;
+            g.fillStyle = `rgba(2, 4, 12, ${a})`;
+            g.fillRect(0, 0, W, H);
+        }
+    });
+
+    // Barras Widescreen Anamórficas (2.35:1)
+    g.fillStyle = '#000';
+    g.fillRect(0, 0, W, 42);
+    g.fillRect(0, H - 42, W, 42);
+
+    let sc = t < 11 ? 'Cena 1 · Observação' : t < 19 ? 'Cena 2 · Ascensão' : t < 34 ? 'Cena 3 · O Diamante' : t < 47 ? 'Cena 4 · O Interceptador' : 'Cena 5 · Fuga Noturna';
+    document.getElementById('cap').textContent = `${sc}   |   00:${String(Math.floor(t)).padStart(2, '0')}.${String(Math.floor((t % 1) * 100)).padStart(2, '0')}`;
+}
+
+let t = 0, playing = true, spd = 1, last = performance.now();
+const sl = document.getElementById('sl');
+function loop(now) {
+    const dt = (now - last) / 1000; last = now;
+    if (playing) {
+        t += dt * spd;
+        if (t >= 70) t = 0;
+        sl.value = t;
+    }
+    draw(t);
+    requestAnimationFrame(loop);
+}
+
+sl.oninput = e => { t = +e.target.value; };
+document.getElementById('pp').onclick = e => { playing = !playing; e.target.textContent = playing ? '⏸ Pausar' : '▶ Continuar'; };
+document.getElementById('rs').onclick = () => { t = 0; playing = true; document.getElementById('pp').textContent = '⏸ Pausar'; };
+document.getElementById('sp').onclick = e => { spd = spd === 1 ? 2 : spd === 2 ? 0.5 : 1; e.target.textContent = spd + '×'; };
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
